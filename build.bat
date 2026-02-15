@@ -7,6 +7,9 @@ echo.
 
 pip install pyinstaller >nul 2>&1
 
+:: Find site-packages for CUDA DLLs
+for /f "delims=" %%i in ('python -c "import site; print(site.getusersitepackages())"') do set SP=%%i
+
 pyinstaller --noconfirm --onedir --windowed ^
     --name "Whisper" ^
     --icon "icon.ico" ^
@@ -15,6 +18,9 @@ pyinstaller --noconfirm --onedir --windowed ^
     --add-data "icon.png;." ^
     --add-data "mic_on.wav;." ^
     --add-data "mic_off.wav;." ^
+    --add-binary "%SP%\nvidia\cublas\bin\*.dll;." ^
+    --add-binary "%SP%\nvidia\cudnn\bin\*.dll;." ^
+    --add-binary "%SP%\ctranslate2\*.dll;." ^
     --hidden-import "faster_whisper" ^
     --hidden-import "ctranslate2" ^
     --hidden-import "huggingface_hub" ^

@@ -50,20 +50,22 @@ ACTION_DELETE_PHRASE = "\x7f"
 ACTION_UNDO = "\x1a"
 ACTION_SELECT_ALL = "\x01"
 
-# APP_DIR is always the folder containing the exe (or script during dev).
-# Models live in %APPDATA%\Whisper\models for faster NVMe loading.
+# APP_DIR = folder next to exe (settings live here).
+# BUNDLE_DIR = where PyInstaller puts --add-data files (_internal/ when frozen).
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
+    BUNDLE_DIR = sys._MEIPASS
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_DIR = APP_DIR
 MODELS_DIR = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")), "Whisper", "models"
 )
 os.makedirs(MODELS_DIR, exist_ok=True)
 ICON_PATH = next(
-    (p for p in (os.path.join(APP_DIR, n) for n in ("icon.png", "icon.ico"))
+    (p for p in (os.path.join(BUNDLE_DIR, n) for n in ("icon.png", "icon.ico"))
      if os.path.exists(p)),
-    os.path.join(APP_DIR, "icon.ico"),
+    os.path.join(BUNDLE_DIR, "icon.ico"),
 )
 SETTINGS_FILE = os.path.join(APP_DIR, ".settings.json")
 STARTUP_LINK = os.path.join(
@@ -356,7 +358,7 @@ html,body{background:var(--g1);font-family:'Segoe UI',sans-serif;
       <span class="check" id="chk_start_with_windows"></span> Start with Windows
     </div>
     <div class="mi" onclick="toggleSetting(event,'start_minimized')">
-      <span class="check" id="chk_start_minimized"></span> Start minimized
+      <span class="check" id="chk_start_minimized"></span> Run in background
     </div>
     <div class="sep"></div>
     <div class="mi restart-action" id="restart_btn" onclick="restartApp()">Restart to apply changes</div>
@@ -609,6 +611,17 @@ class Api:
             self._a.close_to_tray = not self._a.close_to_tray
         elif key == "start_minimized":
             self._a.start_minimized = not self._a.start_minimized
+            if self._a.start_minimized:
+                # Start minimized implies: start with Windows + close to tray
+                self._a.close_to_tray = True
+                if not self._a._startup_cached:
+                    _set_startup(True)
+                    self._a._startup_cached = True
+            else:
+                # Turning off start minimized also removes from startup
+                if self._a._startup_cached:
+                    _set_startup(False)
+                    self._a._startup_cached = False
         elif key == "start_with_windows":
             enabled = not self._a._startup_cached
             _set_startup(enabled)
@@ -739,7 +752,7 @@ class VoiceTyperApp:
         if not hwnd:
             return
         # Need an .ico file for LoadImageW
-        ico_path = os.path.join(APP_DIR, "icon.ico")
+        ico_path = os.path.join(BUNDLE_DIR, "icon.ico")
         if not os.path.exists(ico_path):
             return
         try:
@@ -844,7 +857,7 @@ class VoiceTyperApp:
 
     def _play_sound(self, name):
         def _play():
-            path = os.path.join(APP_DIR, f"{name}.wav")
+            path = os.path.join(BUNDLE_DIR, f"{name}.wav")
             if os.path.exists(path):
                 try:
                     winsound.PlaySound(
