@@ -130,11 +130,14 @@ _SIZES_MB = {
 }
 
 
-def _screen_width():
+def _screen_size():
+    """Return (width, height) of the primary monitor work area."""
     try:
-        return ctypes.windll.user32.GetSystemMetrics(0)
+        rect = wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
+        return rect.right - rect.left, rect.bottom - rect.top
     except Exception:
-        return 1920
+        return 1920, 1080
 
 
 def _load_settings():
@@ -316,8 +319,8 @@ html,body{background:var(--g1);font-family:'Segoe UI',sans-serif;
     <div class="sep"></div>
     <div class="mi" onclick="recal()">Recalibrate</div>
     <div class="sep"></div>
-    <div class="lbl">Transcript</div>
-    <div class="transcript" id="transcript" onclick="event.stopPropagation()"></div>
+    <div class="lbl" style="display:flex;justify-content:space-between;align-items:center;gap:6px">Transcript<span style="flex:1"></span><span onclick="copyTranscript(event)" style="cursor:pointer;font-size:10px;color:var(--g4);font-weight:normal">Copy</span><span onclick="clearTranscript(event)" style="cursor:pointer;font-size:10px;color:var(--g4);font-weight:normal">Clear</span></div>
+    <div class="transcript" id="transcript" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()"></div>
     <div class="sep"></div>
     <div class="mi noclick" onclick="event.stopPropagation()">
       <div class="csel-row">
@@ -408,6 +411,8 @@ function closeApp(){pywebview.api.close_app()}
 function quitApp(){pywebview.api.quit_app()}
 function restartApp(){pywebview.api.restart_app()}
 function recal(){ddClose();pywebview.api.recalibrate()}
+function clearTranscript(e){e.stopPropagation();pywebview.api.clear_transcript();document.getElementById("transcript").textContent="";_pt=""}
+function copyTranscript(e){e.stopPropagation();const t=document.getElementById("transcript").textContent;if(t)navigator.clipboard.writeText(t)}
 
 function toggleSetting(e,key){
   e.stopPropagation();
@@ -552,6 +557,9 @@ class Api:
 
     def recalibrate(self):
         threading.Thread(target=self._a.calibrate, daemon=True).start()
+
+    def clear_transcript(self):
+        self._a._transcript = ""
 
     def toggle_mini(self):
         self._a._mini_mode = not self._a._mini_mode
@@ -1221,24 +1229,45 @@ class VoiceTyperApp:
 
                 if is_interim:
                     if self.auto_type:
-                        if self._interim_typed_len > 0:
-                            self._backspace(self._interim_typed_len)
-                        self._paste_text(text)
+                        old = self._interim_typed_text
+                        # Find common prefix — only replace what changed
+                        common = 0
+                        for a, b in zip(old, text):
+                            if a == b:
+                                common += 1
+                            else:
+                                break
+                        remove = self._interim_typed_len - common
+                        append = text[common:]
+                        if remove > 0:
+                            self._backspace(remove)
+                        if append:
+                            self._paste_text(append)
                     self._interim_typed_len = len(text) if self.auto_type else 0
                     self._interim_typed_text = text
                     self._set_status("Listening...", "#e0e0e0")
                 else:
-                    # Final: replace interim with final text
+                    # Final: replace only the diff from interim
                     if self._interim_typed_len > 0 and self.auto_type:
-                        # Normalize to compare content, not formatting
                         _in = re.sub(r'\s+', ' ', self._interim_typed_text.strip().lower())
                         _fn = re.sub(r'\s+', ' ', text.strip().lower())
                         if _in == _fn:
-                            # Same content — keep interim as-is
-                            pass
+                            pass  # Same content — keep as-is
                         else:
-                            self._backspace(self._interim_typed_len)
-                            self._paste_text(text)
+                            # Find common prefix for minimal edit
+                            old = self._interim_typed_text
+                            common = 0
+                            for a, b in zip(old, text):
+                                if a == b:
+                                    common += 1
+                                else:
+                                    break
+                            remove = self._interim_typed_len - common
+                            append = text[common:]
+                            if remove > 0:
+                                self._backspace(remove)
+                            if append:
+                                self._paste_text(append)
                     elif self.auto_type:
                         self._paste_text(text)
                     self._interim_typed_len = 0
@@ -1291,6 +1320,17 @@ class VoiceTyperApp:
             old = pyperclip.paste()
         except Exception:
             old = ""
+
+        # Make sure the target app has focus before pasting.
+        # Alt key trick allows SetForegroundWindow from background threads.
+        if self._last_fg_hwnd:
+            try:
+                user32 = ctypes.windll.user32
+                user32.keybd_event(0x12, 0, 2, 0)  # release Alt (unblock)
+                user32.SetForegroundWindow(self._last_fg_hwnd)
+                time.sleep(0.08)
+            except Exception:
+                pass
 
         # Retry clipboard copy — sometimes it's locked by another app
         for _ in range(3):
@@ -1545,8 +1585,8 @@ class VoiceTyperApp:
         )
 
         # Always start visible at top center; saved position used after hide/show
-        screen_w = _screen_width()
-        x = (screen_w - WIN_W) // 2
+        sw, sh = _screen_size()
+        x = (sw - WIN_W) // 2
         y = 8
 
         api = Api(self)
