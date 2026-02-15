@@ -51,11 +51,15 @@ ACTION_UNDO = "\x1a"
 ACTION_SELECT_ALL = "\x01"
 
 # APP_DIR is always the folder containing the exe (or script during dev).
-# Everything stays local: settings, models, etc.
+# Models live in %APPDATA%\Whisper\models for faster NVMe loading.
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")), "Whisper", "models"
+)
+os.makedirs(MODELS_DIR, exist_ok=True)
 ICON_PATH = next(
     (p for p in (os.path.join(APP_DIR, n) for n in ("icon.png", "icon.ico"))
      if os.path.exists(p)),
@@ -855,8 +859,7 @@ class VoiceTyperApp:
     # ─── Engine ──────────────────────────────────────────────────────────
 
     def _load_model(self):
-        cache_dir = os.path.join(APP_DIR, "models")
-        os.makedirs(cache_dir, exist_ok=True)
+        cache_dir = MODELS_DIR
 
         model = self._cfg_model
         device, compute = self._cfg_device_mode.split("/")
@@ -1239,7 +1242,7 @@ class VoiceTyperApp:
                 if "cublas" in err or "cuda" in err or "cudnn" in err or "dll" in err:
                     self._set_status("CUDA error — reloading on CPU...", "#e0c060")
                     try:
-                        cache_dir = os.path.join(APP_DIR, "models")
+                        cache_dir = MODELS_DIR
                         self.model = WhisperModel(
                             self._cfg_model, device="cpu", compute_type="int8",
                             download_root=cache_dir,
@@ -1334,18 +1337,23 @@ class VoiceTyperApp:
     # ─── System Tray ─────────────────────────────────────────────────────
 
     def _tray_image(self, rec=False):
-        s = 64
-        img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        if rec:
-            d.ellipse([4, 4, s - 4, s - 4], fill="#e81123")
-            d.rectangle([22, 22, 42, 42], fill="white")
-        else:
-            d.ellipse([4, 4, s - 4, s - 4], fill="#2a2a2a")
-            d.rounded_rectangle([26, 16, 38, 36], radius=6, fill="white")
-            d.rectangle([30, 38, 34, 44], fill="white")
-            d.arc([22, 28, 42, 48], 0, 180, fill="white", width=2)
-        return img
+        # Use the app icon for idle; red-tinted version for recording
+        if not hasattr(self, "_tray_icon_idle"):
+            try:
+                self._tray_icon_idle = Image.open(ICON_PATH).resize(
+                    (64, 64), Image.LANCZOS
+                )
+            except Exception:
+                s = 64
+                img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+                ImageDraw.Draw(img).ellipse([4, 4, s - 4, s - 4], fill="#2a2a2a")
+                self._tray_icon_idle = img
+            # Build red recording variant: overlay with red tint
+            rec_img = self._tray_icon_idle.copy().convert("RGBA")
+            overlay = Image.new("RGBA", rec_img.size, (220, 30, 30, 140))
+            rec_img = Image.alpha_composite(rec_img, overlay)
+            self._tray_icon_rec = rec_img
+        return self._tray_icon_rec if rec else self._tray_icon_idle
 
     def _update_tray(self):
         if not self.tray_icon:
@@ -1380,11 +1388,6 @@ class VoiceTyperApp:
             pystray.MenuItem("Quit", lambda *_: self._on_quit()),
         )
         tray_img = self._tray_image()
-        if os.path.exists(ICON_PATH):
-            try:
-                tray_img = Image.open(ICON_PATH)
-            except Exception:
-                pass
         self.tray_icon = pystray.Icon(
             "whisper", tray_img, "Whisper", menu
         )
