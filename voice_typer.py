@@ -42,19 +42,26 @@ try:
 except Exception:
     pass
 
+VERSION = "1.0.0"
+
 # Special control characters used as action signals
 ACTION_BACKSPACE = "\x08"
 ACTION_DELETE_PHRASE = "\x7f"
 ACTION_UNDO = "\x1a"
 ACTION_SELECT_ALL = "\x01"
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# APP_DIR is always the folder containing the exe (or script during dev).
+# Everything stays local: settings, models, etc.
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = next(
-    (p for p in (os.path.join(SCRIPT_DIR, n) for n in ("icon.png", "icon.ico"))
+    (p for p in (os.path.join(APP_DIR, n) for n in ("icon.png", "icon.ico"))
      if os.path.exists(p)),
-    os.path.join(SCRIPT_DIR, "icon.ico"),
+    os.path.join(APP_DIR, "icon.ico"),
 )
-SETTINGS_FILE = os.path.join(SCRIPT_DIR, ".settings.json")
+SETTINGS_FILE = os.path.join(APP_DIR, ".settings.json")
 STARTUP_LINK = os.path.join(
     os.environ.get("APPDATA", ""),
     r"Microsoft\Windows\Start Menu\Programs\Startup\Whisper.lnk",
@@ -137,8 +144,8 @@ def _set_startup(enabled):
         script = (
             f'$ws=New-Object -ComObject WScript.Shell;'
             f'$s=$ws.CreateShortcut("{STARTUP_LINK}");'
-            f'$s.TargetPath="{os.path.join(SCRIPT_DIR, "start.bat")}";'
-            f'$s.WorkingDirectory="{SCRIPT_DIR}";'
+            f'$s.TargetPath="{sys.executable if getattr(sys, "frozen", False) else os.path.join(APP_DIR, "voice_typer.py")}";'
+            f'$s.WorkingDirectory="{APP_DIR}";'
             f'$s.WindowStyle=7;$s.Description="Whisper";$s.Save()'
         )
         subprocess.run(["powershell", "-Command", script],
@@ -522,7 +529,7 @@ class Api:
         try:
             subprocess.Popen([sys.executable] + sys.argv)
         except Exception:
-            subprocess.Popen([sys.executable, os.path.join(SCRIPT_DIR, "voice_typer.py")])
+            subprocess.Popen([sys.executable, os.path.join(APP_DIR, "voice_typer.py")])
         self._a._on_quit()
 
     def recalibrate(self):
@@ -728,7 +735,7 @@ class VoiceTyperApp:
         if not hwnd:
             return
         # Need an .ico file for LoadImageW
-        ico_path = os.path.join(SCRIPT_DIR, "icon.ico")
+        ico_path = os.path.join(APP_DIR, "icon.ico")
         if not os.path.exists(ico_path):
             return
         try:
@@ -833,7 +840,7 @@ class VoiceTyperApp:
 
     def _play_sound(self, name):
         def _play():
-            path = os.path.join(SCRIPT_DIR, f"{name}.wav")
+            path = os.path.join(APP_DIR, f"{name}.wav")
             if os.path.exists(path):
                 try:
                     winsound.PlaySound(
@@ -848,7 +855,7 @@ class VoiceTyperApp:
     # ─── Engine ──────────────────────────────────────────────────────────
 
     def _load_model(self):
-        cache_dir = os.path.join(SCRIPT_DIR, "models")
+        cache_dir = os.path.join(APP_DIR, "models")
         os.makedirs(cache_dir, exist_ok=True)
 
         model = self._cfg_model
@@ -1232,7 +1239,7 @@ class VoiceTyperApp:
                 if "cublas" in err or "cuda" in err or "cudnn" in err or "dll" in err:
                     self._set_status("CUDA error — reloading on CPU...", "#e0c060")
                     try:
-                        cache_dir = os.path.join(SCRIPT_DIR, "models")
+                        cache_dir = os.path.join(APP_DIR, "models")
                         self.model = WhisperModel(
                             self._cfg_model, device="cpu", compute_type="int8",
                             download_root=cache_dir,
@@ -1414,6 +1421,7 @@ class VoiceTyperApp:
     def _save_current_settings(self):
         try:
             data = {
+                "version": VERSION,
                 "auto_type": self.auto_type,
                 "close_to_tray": self.close_to_tray,
                 "model_size": self._cfg_model,

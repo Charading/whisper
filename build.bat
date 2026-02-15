@@ -9,7 +9,12 @@ pip install pyinstaller >nul 2>&1
 
 pyinstaller --noconfirm --onedir --windowed ^
     --name "Whisper" ^
+    --icon "icon.ico" ^
     --add-data "config.py;." ^
+    --add-data "icon.ico;." ^
+    --add-data "icon.png;." ^
+    --add-data "mic_on.wav;." ^
+    --add-data "mic_off.wav;." ^
     --hidden-import "faster_whisper" ^
     --hidden-import "ctranslate2" ^
     --hidden-import "huggingface_hub" ^
@@ -34,16 +39,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Copy config and icons next to exe so user can edit them
-copy /y config.py dist\Whisper\ >nul 2>&1
-
 echo.
 echo ============================================
 echo   Build complete!
 echo   Output: dist\Whisper\Whisper.exe
 echo ============================================
 echo.
-echo   To distribute: copy the entire dist\Whisper folder.
-echo   config.py is included so users can edit settings.
+echo   Zip the dist\Whisper folder to distribute.
 echo.
 pause
