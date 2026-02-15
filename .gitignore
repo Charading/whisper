@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.settings.json
+models/
+dist/
+build/
+*.spec
+.claude/
