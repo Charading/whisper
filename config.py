@@ -10,10 +10,10 @@ MODEL_SIZE = "small"
 
 # Device: "cuda" for GPU, "cpu" for CPU-only
 # (requires CUDA 12 toolkit for GPU — use "cpu" if you get cublas errors)
-DEVICE = "cpu"
+DEVICE = "cuda"
 
 # Compute type: "float16" for GPU (fast), "int8" for CPU (lighter)
-COMPUTE_TYPE = "int8"
+COMPUTE_TYPE = "float16"
 
 # Language: "en" for English, or None for auto-detect (slightly slower)
 LANGUAGE = "en"

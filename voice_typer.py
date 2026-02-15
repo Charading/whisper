@@ -15,9 +15,21 @@ import winsound
 import ctypes
 import ctypes.wintypes as wintypes
 import subprocess
+import logging
 from string import Template
 
 import webview
+
+# Log to file next to exe so errors are visible from windowed builds
+logging.basicConfig(
+    filename=os.path.join(
+        os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+        else os.path.dirname(os.path.abspath(__file__)),
+        "whisper.log",
+    ),
+    level=logging.ERROR,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 from PIL import Image, ImageDraw
 
 from config import (
@@ -696,6 +708,7 @@ class VoiceTyperApp:
         self._mini_mode = False
         self._fade_tag = 0
         self._menu_open = False
+        self._window_visible = True
         self._theme = 0
         self.start_minimized = False
 
@@ -728,7 +741,7 @@ class VoiceTyperApp:
     # ─── Win32 focus helpers ─────────────────────────────────────────────
 
     def _show_no_activate(self):
-        """Show the window on top without stealing focus."""
+        """Show the window on top without stealing focus (pure Win32)."""
         if self._own_hwnd:
             try:
                 SW_SHOWNA = 8  # show without activating
@@ -737,14 +750,8 @@ class VoiceTyperApp:
                     self._own_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
                 )
-                return
             except Exception:
                 pass
-        try:
-            if self.window:
-                self.window.show()
-        except Exception:
-            pass
 
     def _set_window_icon(self):
         """Set the taskbar/title-bar icon via Win32 SendMessage + LoadImage."""
@@ -932,9 +939,7 @@ class VoiceTyperApp:
             self.calibrate()
             self._start_engine()
         except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            print(f"\nModel load error: {exc}", flush=True)
+            logging.error(f"Model load error: {exc}", exc_info=True)
             err = str(exc).lower()
             if device == "cuda" and ("cuda" in err or "cublas" in err
                                      or "cudnn" in err or "dll" in err
@@ -1251,7 +1256,7 @@ class VoiceTyperApp:
 
             except RuntimeError as exc:
                 err = str(exc).lower()
-                print(f"[VT] Transcription error: {exc}", flush=True)
+                logging.error(f"Transcription RuntimeError: {exc}", exc_info=True)
                 if "cublas" in err or "cuda" in err or "cudnn" in err or "dll" in err:
                     self._set_status("CUDA error — reloading on CPU...", "#e0c060")
                     try:
@@ -1267,14 +1272,14 @@ class VoiceTyperApp:
                     except Exception as exc2:
                         self._set_status(f"Model error: {exc2}", "#e81123")
                 else:
-                    self._set_status("Error", "#e81123")
+                    self._set_status(f"RT: {exc}"[:60], "#e81123")
                     threading.Thread(
-                        target=lambda: (time.sleep(3), self._revert_status()),
+                        target=lambda: (time.sleep(5), self._revert_status()),
                         daemon=True,
                     ).start()
             except Exception as exc:
-                print(f"[VT] Transcription error: {exc}", flush=True)
-                self._set_status("Error", "#e81123")
+                logging.error(f"Transcription error: {exc}", exc_info=True)
+                self._set_status(f"Err: {exc}"[:60], "#e81123")
                 threading.Thread(
                     target=lambda: (time.sleep(3), self._revert_status()),
                     daemon=True,
@@ -1287,13 +1292,19 @@ class VoiceTyperApp:
         except Exception:
             old = ""
 
-        pyperclip.copy(text)
-        time.sleep(0.02)
-        keyboard.press_and_release("ctrl+v")
+        # Retry clipboard copy — sometimes it's locked by another app
+        for _ in range(3):
+            try:
+                pyperclip.copy(text)
+                break
+            except Exception:
+                time.sleep(0.05)
         time.sleep(0.05)
+        keyboard.press_and_release("ctrl+v")
+        time.sleep(0.1)
 
         def restore():
-            time.sleep(1.0)
+            time.sleep(2.0)
             try:
                 pyperclip.copy(old)
             except Exception:
@@ -1303,7 +1314,12 @@ class VoiceTyperApp:
     def toggle_recording(self):
         if not self.model_loaded:
             return
-        self._show_no_activate()
+        # Bring window back if hidden to tray, without stealing focus
+        if not self._window_visible:
+            self._window_visible = True
+            self._show_no_activate()
+        else:
+            self._show_no_activate()
 
         if self.is_recording:
             self._stop_recording()
@@ -1361,10 +1377,16 @@ class VoiceTyperApp:
                 img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
                 ImageDraw.Draw(img).ellipse([4, 4, s - 4, s - 4], fill="#2a2a2a")
                 self._tray_icon_idle = img
-            # Build red recording variant: overlay with red tint
+            # Build red recording variant: shift hue to red per-pixel
             rec_img = self._tray_icon_idle.copy().convert("RGBA")
-            overlay = Image.new("RGBA", rec_img.size, (220, 30, 30, 140))
-            rec_img = Image.alpha_composite(rec_img, overlay)
+            pixels = rec_img.load()
+            for y in range(rec_img.height):
+                for x in range(rec_img.width):
+                    r, g, b, a = pixels[x, y]
+                    if a > 0:
+                        # Convert to brightness and map to red
+                        lum = int(0.299 * r + 0.587 * g + 0.114 * b)
+                        pixels[x, y] = (min(255, lum + 120), lum // 4, lum // 4, a)
             self._tray_icon_rec = rec_img
         return self._tray_icon_rec if rec else self._tray_icon_idle
 
@@ -1386,8 +1408,18 @@ class VoiceTyperApp:
             import pystray
         except ImportError:
             return
+        def _toggle_visibility(*_):
+            if self._window_visible:
+                self._hide_to_tray()
+            else:
+                self._show_from_tray()
+
         menu = pystray.Menu(
-            pystray.MenuItem("Show", lambda *_: self._show_from_tray()),
+            pystray.MenuItem(
+                lambda _: "Hide" if self._window_visible else "Show",
+                _toggle_visibility,
+                default=True,
+            ),
             pystray.MenuItem(
                 "Toggle Recording", lambda *_: self.toggle_recording()
             ),
@@ -1408,9 +1440,32 @@ class VoiceTyperApp:
 
     def _show_from_tray(self):
         try:
-            if self.window:
+            self._window_visible = True
+            # Use Win32 ShowWindow to avoid pywebview COM deadlocks
+            if self._own_hwnd:
+                SW_SHOW = 5
+                ctypes.windll.user32.ShowWindow(self._own_hwnd, SW_SHOW)
+                ctypes.windll.user32.SetWindowPos(
+                    self._own_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                )
+            elif self.window:
                 self.window.show()
-                self.window.on_top = True
+            self._update_tray()
+        except Exception:
+            pass
+
+    def _hide_to_tray(self):
+        try:
+            self._save_current_settings()
+            self._window_visible = False
+            # Use Win32 ShowWindow to avoid pywebview COM deadlocks
+            if self._own_hwnd:
+                SW_HIDE = 0
+                ctypes.windll.user32.ShowWindow(self._own_hwnd, SW_HIDE)
+            elif self.window:
+                self.window.hide()
+            self._update_tray()
         except Exception:
             pass
 
@@ -1456,11 +1511,7 @@ class VoiceTyperApp:
 
     def _on_close(self):
         if self.close_to_tray:
-            self._save_current_settings()
-            try:
-                self.window.hide()
-            except Exception:
-                pass
+            self._hide_to_tray()
             return
         self._on_quit()
 
@@ -1493,10 +1544,10 @@ class VoiceTyperApp:
             g1=t[0], g2=t[1], g3=t[2], g4=t[3],
         )
 
+        # Always start visible at top center; saved position used after hide/show
         screen_w = _screen_width()
-        settings = _load_settings()
-        x = settings.get("x", (screen_w - WIN_W) // 2)
-        y = settings.get("y", 8)
+        x = (screen_w - WIN_W) // 2
+        y = 8
 
         api = Api(self)
         self.window = webview.create_window(
@@ -1512,7 +1563,6 @@ class VoiceTyperApp:
             resizable=False,
             min_size=(100, 36),
             background_color=t[0],
-            hidden=self.start_minimized,
         )
         self.window.events.loaded += lambda: self._on_loaded()
         _icon = ICON_PATH if os.path.exists(ICON_PATH) else None
