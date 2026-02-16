@@ -316,6 +316,9 @@ html,body{background:var(--g1);font-family:'Segoe UI',sans-serif;
     <div class="mi" onclick="toggleSetting(event,'auto_type')">
       <span class="check" id="chk_auto_type"></span> Auto-type
     </div>
+    <div class="mi" onclick="toggleSetting(event,'batch_mode')">
+      <span class="check" id="chk_batch_mode"></span> Type all at once
+    </div>
     <div class="sep"></div>
     <div class="mi" onclick="recal()">Recalibrate</div>
     <div class="sep"></div>
@@ -492,6 +495,7 @@ async function poll(){
       _pt=s.transcript;
     }
     document.getElementById("chk_auto_type").innerHTML=s.auto_type?"&#10003;":"";
+    document.getElementById("chk_batch_mode").innerHTML=s.batch_mode?"&#10003;":"";
     document.getElementById("chk_close_to_tray").innerHTML=s.close_to_tray?"&#10003;":"";
     document.getElementById("chk_start_with_windows").innerHTML=s.start_with_windows?"&#10003;":"";
     document.getElementById("chk_start_minimized").innerHTML=s.start_minimized?"&#10003;":"";
@@ -627,6 +631,8 @@ class Api:
     def toggle_setting(self, key):
         if key == "auto_type":
             self._a.auto_type = not self._a.auto_type
+        elif key == "batch_mode":
+            self._a.batch_mode = not self._a.batch_mode
         elif key == "close_to_tray":
             self._a.close_to_tray = not self._a.close_to_tray
         elif key == "start_minimized":
@@ -667,6 +673,7 @@ class Api:
             "color": self._a._status_color,
             "transcript": self._a._transcript,
             "auto_type": self._a.auto_type,
+            "batch_mode": self._a.batch_mode,
             "close_to_tray": self._a.close_to_tray,
             "start_with_windows": self._a._startup_cached,
             "cfg_model": self._a._cfg_model,
@@ -720,6 +727,8 @@ class VoiceTyperApp:
         self._theme = 0
         self.start_minimized = False
 
+        self.batch_mode = False
+
         self._wave_levels = collections.deque([0.0] * WAVE_BARS, maxlen=WAVE_BARS)
         self._voice_commands = sorted(
             VOICE_COMMANDS.items(), key=lambda x: len(x[0]), reverse=True
@@ -729,6 +738,7 @@ class VoiceTyperApp:
         settings = _load_settings()
         self.auto_type = settings.get("auto_type", True)
         self.close_to_tray = settings.get("close_to_tray", False)
+        self.batch_mode = settings.get("batch_mode", False)
         self._cfg_model = settings.get("model_size", MODEL_SIZE)
         self._cfg_device_mode = settings.get(
             "device_mode", f"{DEVICE}/{COMPUTE_TYPE}"
@@ -1054,12 +1064,13 @@ class VoiceTyperApp:
                 self._idle_frames = 0
                 self.audio_buffer.append(chunk)
                 self._speech_frames += 1
-                # Interim transcription: snapshot every INTERIM_SECONDS
-                speech_sec = (self._speech_frames * self.block_size) / self.sample_rate
-                if speech_sec >= INTERIM_SECONDS and len(self.audio_buffer) > 0:
-                    audio_snap = np.concatenate(self.audio_buffer)
-                    self.phrase_queue.put(("interim", audio_snap))
-                    self._speech_frames = 0
+                # Interim transcription: snapshot every INTERIM_SECONDS (skip in batch mode)
+                if not self.batch_mode:
+                    speech_sec = (self._speech_frames * self.block_size) / self.sample_rate
+                    if speech_sec >= INTERIM_SECONDS and len(self.audio_buffer) > 0:
+                        audio_snap = np.concatenate(self.audio_buffer)
+                        self.phrase_queue.put(("interim", audio_snap))
+                        self._speech_frames = 0
             elif self.speech_detected:
                 self.audio_buffer.append(chunk)
                 self.silence_frames += 1
@@ -1534,6 +1545,7 @@ class VoiceTyperApp:
             data = {
                 "version": VERSION,
                 "auto_type": self.auto_type,
+                "batch_mode": self.batch_mode,
                 "close_to_tray": self.close_to_tray,
                 "model_size": self._cfg_model,
                 "device_mode": self._cfg_device_mode,
